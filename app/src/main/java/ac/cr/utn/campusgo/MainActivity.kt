@@ -26,6 +26,10 @@ import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.card.MaterialCardView
 import java.util.UUID
+import ac.cr.utn.campusgo.data.datasource.local.InternalPhotoLocalDataSource
+import ac.cr.utn.campusgo.data.repositories.PhotoRepositoryImpl
+import ac.cr.utn.campusgo.domain.services.PhotoService
+import android.widget.ImageView
 
 class MainActivity : AppCompatActivity() {
 
@@ -34,6 +38,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var searchInput: EditText
     private lateinit var categoryFilter: Spinner
     private lateinit var emptyMessage: TextView
+    private lateinit var photoService: PhotoService
 
     private val categories = listOf(
         "Todas",
@@ -49,10 +54,39 @@ class MainActivity : AppCompatActivity() {
     private var pendingImageCallback: ((Uri) -> Unit)? = null
 
     private val imagePicker = registerForActivityResult(
-        ActivityResultContracts.GetContent()
+        ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
-            pendingImageCallback?.invoke(uri)
+            try {
+                contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+                pendingImageCallback?.invoke(uri)
+            } catch (exception: SecurityException) {
+                Toast.makeText(
+                    this,
+                    "No se pudo conservar el acceso a la imagen.",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+        pendingImageCallback = null
+    }
+
+    private val cameraCapture = registerForActivityResult(
+        ActivityResultContracts.TakePicturePreview()
+    ) { bitmap ->
+        if (bitmap != null) {
+            try {
+                pendingImageCallback?.invoke(photoService.save(bitmap))
+            } catch (exception: Exception) {
+                Toast.makeText(
+                    this,
+                    exception.message ?: "No se pudo guardar la fotografía.",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
         }
         pendingImageCallback = null
     }
@@ -62,7 +96,12 @@ class MainActivity : AppCompatActivity() {
 
         val dataSource = SharedPreferencesPlaceDataSource(applicationContext)
         val repository = PlaceRepositoryImpl(dataSource)
-        val service = PlaceService(repository)
+
+        val photoDataSource = InternalPhotoLocalDataSource(applicationContext)
+        val photoRepository = PhotoRepositoryImpl(photoDataSource)
+        photoService = PhotoService(photoRepository)
+
+        val service = PlaceService(repository, photoService)
 
         presenter = PlacePresenter(
             service = service,
@@ -242,13 +281,24 @@ class MainActivity : AppCompatActivity() {
                 })
             }
 
-            if (place.imageUri != null) {
-                content.addView(TextView(this).apply {
-                    text = "Fotografía adjunta"
-                    textSize = 12f
-                    setTextColor(0xFF64748B.toInt())
-                    setPadding(0, dp(4), 0, 0)
-                })
+            place.imageUri?.let { value ->
+                val image = ImageView(this).apply {
+                    contentDescription = "Fotografía de ${place.name}"
+                    scaleType = ImageView.ScaleType.CENTER_CROP
+                    adjustViewBounds = true
+                    setImageURI(Uri.parse(value))
+                }
+
+                content.addView(
+                    image,
+                    LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        dp(180)
+                    ).apply {
+                        topMargin = dp(8)
+                        bottomMargin = dp(8)
+                    }
+                )
             }
 
             val actions = LinearLayout(this).apply {
@@ -346,17 +396,31 @@ class MainActivity : AppCompatActivity() {
 
         var imageUri = existing?.imageUri
 
-        val photoButton = MaterialButton(this).apply {
-            text = "Seleccionar fotografía"
+        val galleryButton = MaterialButton(this).apply {
+            text = "Seleccionar desde galería"
             setOnClickListener {
                 pendingImageCallback = { uri ->
                     imageUri = uri.toString()
                     imageStatus.text = "Fotografía seleccionada"
                 }
-                imagePicker.launch("image/*")
+                imagePicker.launch(arrayOf("image/*"))
             }
         }
-        form.addView(photoButton)
+
+        form.addView(galleryButton)
+
+        val cameraButton = MaterialButton(this).apply {
+            text = "Tomar fotografía"
+            setOnClickListener {
+                pendingImageCallback = { uri ->
+                    imageUri = uri.toString()
+                    imageStatus.text = "Fotografía capturada"
+                }
+                cameraCapture.launch(null)
+            }
+        }
+
+        form.addView(cameraButton)
 
         val scroll = ScrollView(this).apply {
             addView(form)
